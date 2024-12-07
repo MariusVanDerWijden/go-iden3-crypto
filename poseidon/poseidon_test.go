@@ -1,6 +1,8 @@
 package poseidon
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"math/big"
@@ -598,5 +600,33 @@ func BenchmarkPoseidonHash16Inputs(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		_, _ = Hash(bigArray16)
+	}
+}
+
+func BenchmarkPoseidonHash(b *testing.B) {
+	input := make([]byte, 5*1024*1024)
+	rand.Read(input)
+	for i := 0; i < b.N; i++ {
+		Sum(input)
+		Sum(input)
+		Sum(input)
+	}
+}
+
+func BenchmarkPoseidonHash2(b *testing.B) {
+	input := make([]byte, 5*1024*1024)
+	rand.Read(input)
+	for i := 0; i < b.N; i++ {
+		HashBytesXLessAlloc(input, spongeInputs)
+		HashBytesXLessAlloc(input, spongeInputs)
+		HashBytesXLessAlloc(input, spongeInputs)
+	}
+}
+
+func BenchmarkSHA(b *testing.B) {
+	input := make([]byte, 50*1024*1024)
+	rand.Read(input)
+	for i := 0; i < b.N; i++ {
+		sha256.Sum256(input)
 	}
 }

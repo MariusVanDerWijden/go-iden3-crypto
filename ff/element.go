@@ -721,6 +721,34 @@ func (z *Element) SetBytes(e []byte) *Element {
 	return z
 }
 
+// SetBytesLessMod sets the element while assuming the 
+// represented bytes is less than the group modulus.
+// If you are unsure if the input is < q, use SetBytes
+func (z *Element) SetBytesLessMod(e []byte) *Element {
+	z.SetZero()
+	if len(e)/8 > len(z) {
+		panic("not less than modulus")
+	}
+	limb := 3
+	for i := len(e)-1; i > 0; i-= 8 {
+		start := i - 8 
+		if start < 0 {
+			start = 0
+		}
+		z[limb] = toUint64(e[start:i])
+		limb--
+	}
+	return z.ToMont()
+}
+
+func toUint64(b []byte) uint64 {
+	var ret uint64
+	for i := len(b) - 1; i > 0; i-- {
+		ret |= uint64(b[i]) << (8 * (len(b)-1-i))
+	}
+	return ret
+}
+
 // SetBigInt sets z to v (regular form) and returns z in Montgomery form
 func (z *Element) SetBigInt(v *big.Int) *Element {
 	z.SetZero()
