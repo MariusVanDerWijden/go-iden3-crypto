@@ -37,11 +37,39 @@ func exp5state(state []*ff.Element) {
 	}
 }
 
+// exp5state perform exp5 for whole state
+func exp5state2(state []ff.Element) {
+	for i := 0; i < len(state); i++ {
+		state[i].Exp(state[i], big5)
+	}
+}
+
 // ark computes Add-Round Key, from the paper https://eprint.iacr.org/2019/458.pdf
 func ark(state, c []*ff.Element, it int) {
 	for i := 0; i < len(state); i++ {
 		state[i].Add(state[i], c[it+i])
 	}
+}
+
+func ark2(state []ff.Element, c []*ff.Element, it int) {
+	for i := 0; i < len(state); i++ {
+		state[i].Add(&state[i], c[it+i])
+	}
+}
+
+// mix returns [[matrix]] * [vector]
+// while utilizing the scratch space to save on allocations
+func mixWithScratch2(state []ff.Element, m [][]*ff.Element, scratch []ff.Element) []ff.Element {
+	for i := 0; i < len(state); i++ {
+		scratch[i].SetZero()
+		for j := 0; j < len(state); j++ {
+			scratch[i].Add(&scratch[i], new(ff.Element).Mul(m[j][i], &state[j]))
+		}
+	}
+	for i := 0; i < len(state); i++ {
+		state[i].Set(&scratch[i])
+	}
+	return state
 }
 
 // mix returns [[matrix]] * [vector]
@@ -113,6 +141,66 @@ func hashElements(state []*ff.Element, scratch []*ff.Element) []*ff.Element {
 	exp5state(state)
 	state = mixWithScratch(state, M, scratch)
 	return state
+}
+
+// OBS: assumes scratch and state are of equal length
+func hashElements2(state []ff.Element, scratch []ff.Element) []ff.Element {
+	t := len(state)
+	nRoundsF := NROUNDSF
+	nRoundsP := NROUNDSP[t-2]
+	C := c.c[t-2]
+	S := c.s[t-2]
+	M := c.m[t-2]
+	P := c.p[t-2]
+
+	ark2(state, C, 0)
+
+	for i := 0; i < nRoundsF/2-1; i++ {
+		exp5state2(state)
+		ark2(state, C, (i+1)*t)
+		state = mixWithScratch2(state, M, scratch)
+	}
+	exp5state2(state)
+	ark2(state, C, (nRoundsF/2)*t)
+	state = mixWithScratch2(state, P, scratch)
+	newState0 := ff.Element{}
+
+	for i := 0; i < nRoundsP; i++ {
+		exp5(&state[0])
+		state[0].Add(&state[0], C[(nRoundsF/2+1)*t+i])
+
+		newState0.SetZero()
+		for j := 0; j < len(state); j++ {
+			newState0.Add(&newState0, new(ff.Element).Mul(S[(t*2-1)*i+j], &state[j]))
+		}
+
+		for k := 1; k < t; k++ {
+			state[k].Add(&state[k], new(ff.Element).Mul(&state[0], S[(t*2-1)*i+t+k-1]))
+		}
+		state[0].Set(&newState0)
+	}
+
+	for i := 0; i < nRoundsF/2-1; i++ {
+		exp5state2(state)
+		ark2(state, C, (nRoundsF/2+1)*t+nRoundsP+i*t)
+		state = mixWithScratch2(state, M, scratch)
+	}
+	exp5state2(state)
+	state = mixWithScratch2(state, M, scratch)
+	return state
+}
+
+// OBS: assumes nOuts = 1
+// assumes the last element of the state is the initState
+// assumes scratch and state are of equal length
+func hashWithStateExBytes2(state []ff.Element, scratch []ff.Element) (ff.Element, error) {
+	if len(state) == 1 || len(state)-1 > len(NROUNDSP) {
+		return ff.Element{}, fmt.Errorf("invalid inputs length %d, max %d", len(state), len(NROUNDSP))
+	}
+
+	state = hashElements2(state, scratch)
+
+	return state[0], nil
 }
 
 // OBS: assumes nOuts = 1
@@ -188,32 +276,33 @@ func HashBytesXLessAlloc(msg []byte, frameSize int) ([]byte, error) {
 		return nil, errors.New("incorrect frame size")
 	}
 
-	state := make([]*ff.Element, frameSize+1)   // one additional item for initState, always 0
-	scratch := make([]*ff.Element, frameSize+1) // Scratch space to reduce allocations
+	state := make([]ff.Element, frameSize+1)   // one additional item for initState, always 0
+	scratch := make([]ff.Element, frameSize+1) // Scratch space to reduce allocations
 	for i := 0; i < len(state); i++ {
-		state[i] = new(ff.Element)
-		scratch[i] = new(ff.Element)
+		state[i] = ff.Element{}
+		scratch[i] = ff.Element{}
 	}
 
 	dirty := false
-	currentHash := new(ff.Element)
+	currentHash := ff.Element{}
 
-	k := 0
+	k := 1
 	for i := 0; i < len(msg)/spongeChunkSize; i++ {
 		dirty = true
 		state[k].SetBytesLessMod(msg[spongeChunkSize*i : spongeChunkSize*(i+1)])
-		if k == frameSize-1 {
-			hash, err := hashWithStateExBytes(state, scratch)
+		if k == frameSize {
+			hash, err := hashWithStateExBytes2(state, scratch)
 			if err != nil {
 				return nil, err
 			}
-			currentHash.Set(hash)
+			currentHash.Set(&hash)
 			dirty = false
-			state[0].Set(hash)
-			for j := 1; j < len(state); j++ {
+			state[0].SetZero() // initState
+			state[1].Set(&hash)
+			for j := 2; j < len(state); j++ {
 				state[j].SetZero()
 			}
-			k = 1
+			k = 2
 		} else {
 			k++
 		}
@@ -226,15 +315,16 @@ func HashBytesXLessAlloc(msg []byte, frameSize int) ([]byte, error) {
 		var buf [spongeChunkSize]byte
 		copy(buf[:], msg[(len(msg)/spongeChunkSize)*spongeChunkSize:])
 		state[k].SetBytesLessMod(buf[:])
+		dirty = true
 	}
 
 	if dirty {
 		// we haven't hashed something in the main sponge loop and need to do hash here
-		hash, err := hashWithStateExBytes(state, scratch)
+		hash, err := hashWithStateExBytes2(state, scratch)
 		if err != nil {
 			return nil, err
 		}
-		currentHash.Set(hash)
+		currentHash.Set(&hash)
 	}
 
 	hash := currentHash.Bytes()

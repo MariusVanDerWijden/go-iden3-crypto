@@ -729,15 +729,12 @@ func (z *Element) SetBytesLessMod(e []byte) *Element {
 	if len(e)/8 > len(z) {
 		panic("not less than modulus")
 	}
-	limb := 3
-	for i := len(e)-1; i > 0; i-= 8 {
-		start := i - 8 
-		if start < 0 {
-			start = 0
-		}
-		z[limb] = toUint64(e[start:i])
-		limb--
-	}
+	slice := make([]byte, Limbs * 8)
+	copy(slice[(Limbs * 8)-len(e):], e)
+	z[3] = toUint64(slice[0:8])
+	z[2] = toUint64(slice[7:16])
+	z[1] = toUint64(slice[15:24])
+	z[0] = toUint64(slice[23:32])
 	return z.ToMont()
 }
 
