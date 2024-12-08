@@ -37,6 +37,13 @@ func exp5state(state []*ff.Element) {
 	}
 }
 
+// exp5state perform exp5 for whole state
+func exp5state2(state []ff.Element) {
+	for i := 0; i < len(state); i++ {
+		state[i].Exp(state[i], big5)
+	}
+}
+
 // ark computes Add-Round Key, from the paper https://eprint.iacr.org/2019/458.pdf
 func ark(state, c []*ff.Element, it int) {
 	for i := 0; i < len(state); i++ {
@@ -44,21 +51,40 @@ func ark(state, c []*ff.Element, it int) {
 	}
 }
 
-// mix returns [[matrix]] * [vector]
-func mix(state []*ff.Element, t int, m [][]*ff.Element) []*ff.Element {
-	mul := zero()
-	newState := make([]*ff.Element, t)
-	for i := 0; i < t; i++ {
-		newState[i] = zero()
-	}
+func ark2(state []ff.Element, c []*ff.Element, it int) {
 	for i := 0; i < len(state); i++ {
-		newState[i].SetUint64(0)
+		state[i].Add(&state[i], c[it+i])
+	}
+}
+
+// mix returns [[matrix]] * [vector]
+// while utilizing the scratch space to save on allocations
+func mixWithScratch2(state []ff.Element, m [][]*ff.Element, scratch []ff.Element) []ff.Element {
+	for i := 0; i < len(state); i++ {
+		scratch[i].SetZero()
 		for j := 0; j < len(state); j++ {
-			mul.Mul(m[j][i], state[j])
-			newState[i].Add(newState[i], mul)
+			scratch[i].Add(&scratch[i], new(ff.Element).Mul(m[j][i], &state[j]))
 		}
 	}
-	return newState
+	for i := 0; i < len(state); i++ {
+		state[i].Set(&scratch[i])
+	}
+	return state
+}
+
+// mix returns [[matrix]] * [vector]
+// while utilizing the scratch space to save on allocations
+func mixWithScratch(state []*ff.Element, m [][]*ff.Element, scratch []*ff.Element) []*ff.Element {
+	for i := 0; i < len(state); i++ {
+		scratch[i].SetZero()
+		for j := 0; j < len(state); j++ {
+			scratch[i].Add(scratch[i], new(ff.Element).Mul(m[j][i], state[j]))
+		}
+	}
+	for i := 0; i < len(state); i++ {
+		state[i].Set(scratch[i])
+	}
+	return state
 }
 
 // HashWithState computes the Poseidon hash for the given inputs and initState
@@ -68,6 +94,126 @@ func HashWithState(inpBI []*big.Int, initState *big.Int) (*big.Int, error) {
 		return nil, err
 	}
 	return res[0], nil
+}
+
+// OBS: assumes scratch and state are of equal length
+func hashElements(state []*ff.Element, scratch []*ff.Element) []*ff.Element {
+	t := len(state)
+	nRoundsF := NROUNDSF
+	nRoundsP := NROUNDSP[t-2]
+	C := c.c[t-2]
+	S := c.s[t-2]
+	M := c.m[t-2]
+	P := c.p[t-2]
+
+	ark(state, C, 0)
+
+	for i := 0; i < nRoundsF/2-1; i++ {
+		exp5state(state)
+		ark(state, C, (i+1)*t)
+		state = mixWithScratch(state, M, scratch)
+	}
+	exp5state(state)
+	ark(state, C, (nRoundsF/2)*t)
+	state = mixWithScratch(state, P, scratch)
+	newState0 := zero()
+
+	for i := 0; i < nRoundsP; i++ {
+		exp5(state[0])
+		state[0].Add(state[0], C[(nRoundsF/2+1)*t+i])
+
+		newState0.SetZero()
+		for j := 0; j < len(state); j++ {
+			newState0.Add(newState0, new(ff.Element).Mul(S[(t*2-1)*i+j], state[j]))
+		}
+
+		for k := 1; k < t; k++ {
+			state[k] = state[k].Add(state[k], new(ff.Element).Mul(state[0], S[(t*2-1)*i+t+k-1]))
+		}
+		state[0].Set(newState0)
+	}
+
+	for i := 0; i < nRoundsF/2-1; i++ {
+		exp5state(state)
+		ark(state, C, (nRoundsF/2+1)*t+nRoundsP+i*t)
+		state = mixWithScratch(state, M, scratch)
+	}
+	exp5state(state)
+	state = mixWithScratch(state, M, scratch)
+	return state
+}
+
+// OBS: assumes scratch and state are of equal length
+func hashElements2(state []ff.Element, scratch []ff.Element) []ff.Element {
+	t := len(state)
+	nRoundsF := NROUNDSF
+	nRoundsP := NROUNDSP[t-2]
+	C := c.c[t-2]
+	S := c.s[t-2]
+	M := c.m[t-2]
+	P := c.p[t-2]
+
+	ark2(state, C, 0)
+
+	for i := 0; i < nRoundsF/2-1; i++ {
+		exp5state2(state)
+		ark2(state, C, (i+1)*t)
+		state = mixWithScratch2(state, M, scratch)
+	}
+	exp5state2(state)
+	ark2(state, C, (nRoundsF/2)*t)
+	state = mixWithScratch2(state, P, scratch)
+	newState0 := ff.Element{}
+
+	for i := 0; i < nRoundsP; i++ {
+		exp5(&state[0])
+		state[0].Add(&state[0], C[(nRoundsF/2+1)*t+i])
+
+		newState0.SetZero()
+		for j := 0; j < len(state); j++ {
+			newState0.Add(&newState0, new(ff.Element).Mul(S[(t*2-1)*i+j], &state[j]))
+		}
+
+		for k := 1; k < t; k++ {
+			state[k].Add(&state[k], new(ff.Element).Mul(&state[0], S[(t*2-1)*i+t+k-1]))
+		}
+		state[0].Set(&newState0)
+	}
+
+	for i := 0; i < nRoundsF/2-1; i++ {
+		exp5state2(state)
+		ark2(state, C, (nRoundsF/2+1)*t+nRoundsP+i*t)
+		state = mixWithScratch2(state, M, scratch)
+	}
+	exp5state2(state)
+	state = mixWithScratch2(state, M, scratch)
+	return state
+}
+
+// OBS: assumes nOuts = 1
+// assumes the last element of the state is the initState
+// assumes scratch and state are of equal length
+func hashWithStateExBytes2(state []ff.Element, scratch []ff.Element) (ff.Element, error) {
+	if len(state) == 1 || len(state)-1 > len(NROUNDSP) {
+		return ff.Element{}, fmt.Errorf("invalid inputs length %d, max %d", len(state), len(NROUNDSP))
+	}
+
+	state = hashElements2(state, scratch)
+
+	return state[0], nil
+}
+
+// OBS: assumes nOuts = 1
+// assumes the last element of the state is the initState
+// assumes scratch and state are of equal length
+func hashWithStateExBytes(state []*ff.Element, scratch []*ff.Element) (*ff.Element, error) {
+	if len(state) == 1 || len(state)-1 > len(NROUNDSP) {
+		return nil, fmt.Errorf("invalid inputs length %d, max %d", len(state), len(NROUNDSP))
+	}
+
+	state = hashElements(state, scratch)
+
+	return state[0], nil
 }
 
 func HashWithStateEx(inpBI []*big.Int, initState *big.Int, nOuts int) ([]*big.Int, error) {
@@ -83,13 +229,6 @@ func HashWithStateEx(inpBI []*big.Int, initState *big.Int, nOuts int) ([]*big.In
 	}
 	inp := utils.BigIntArrayToElementArray(inpBI)
 
-	nRoundsF := NROUNDSF
-	nRoundsP := NROUNDSP[t-2]
-	C := c.c[t-2]
-	S := c.s[t-2]
-	M := c.m[t-2]
-	P := c.p[t-2]
-
 	state := make([]*ff.Element, t)
 	if !utils.CheckBigIntInField(initState) {
 		return nil, errors.New("initState values not inside Finite Field")
@@ -98,43 +237,12 @@ func HashWithStateEx(inpBI []*big.Int, initState *big.Int, nOuts int) ([]*big.In
 	state[0] = ff.NewElement().SetBigInt(initState)
 	copy(state[1:], inp)
 
-	ark(state, C, 0)
-
-	for i := 0; i < nRoundsF/2-1; i++ {
-		exp5state(state)
-		ark(state, C, (i+1)*t)
-		state = mix(state, t, M)
-	}
-	exp5state(state)
-	ark(state, C, (nRoundsF/2)*t)
-	state = mix(state, t, P)
-
-	mul := zero()
-	for i := 0; i < nRoundsP; i++ {
-		exp5(state[0])
-		state[0].Add(state[0], C[(nRoundsF/2+1)*t+i])
-
-		mul.SetZero()
-		newState0 := zero()
-		for j := 0; j < len(state); j++ {
-			mul.Mul(S[(t*2-1)*i+j], state[j])
-			newState0.Add(newState0, mul)
-		}
-
-		for k := 1; k < t; k++ {
-			mul.SetZero()
-			state[k] = state[k].Add(state[k], mul.Mul(state[0], S[(t*2-1)*i+t+k-1]))
-		}
-		state[0] = newState0
+	scratch := make([]*ff.Element, len(state))
+	for i := 0; i < len(scratch); i++ {
+		scratch[i] = zero()
 	}
 
-	for i := 0; i < nRoundsF/2-1; i++ {
-		exp5state(state)
-		ark(state, C, (nRoundsF/2+1)*t+nRoundsP+i*t)
-		state = mix(state, t, M)
-	}
-	exp5state(state)
-	state = mix(state, t, M)
+	state = hashElements(state, scratch)
 
 	r := make([]*big.Int, nOuts)
 	for i := 0; i < nOuts; i++ {
@@ -159,6 +267,68 @@ func HashEx(inpBI []*big.Int, nOuts int) ([]*big.Int, error) {
 // HashBytes returns a sponge hash of a msg byte slice split into blocks of 31 bytes
 func HashBytes(msg []byte) (*big.Int, error) {
 	return HashBytesX(msg, spongeInputs)
+}
+
+// HashBytesXLessAlloc returns a sponge hash of a msg byte slice split into blocks of 31 bytes.
+// uses less allocations than the original implementation.
+func HashBytesXLessAlloc(msg []byte, frameSize int) ([]byte, error) {
+	if frameSize < 2 || frameSize > 16 {
+		return nil, errors.New("incorrect frame size")
+	}
+
+	state := make([]ff.Element, frameSize+1)   // one additional item for initState, always 0
+	scratch := make([]ff.Element, frameSize+1) // Scratch space to reduce allocations
+	for i := 0; i < len(state); i++ {
+		state[i] = ff.Element{}
+		scratch[i] = ff.Element{}
+	}
+
+	dirty := false
+	currentHash := ff.Element{}
+
+	k := 1
+	for i := 0; i < len(msg)/spongeChunkSize; i++ {
+		dirty = true
+		state[k].SetBytesLessMod(msg[spongeChunkSize*i : spongeChunkSize*(i+1)])
+		if k == frameSize {
+			hash, err := hashWithStateExBytes2(state, scratch)
+			if err != nil {
+				return nil, err
+			}
+			currentHash.Set(&hash)
+			dirty = false
+			state[0].SetZero() // initState
+			state[1].Set(&hash)
+			for j := 2; j < len(state); j++ {
+				state[j].SetZero()
+			}
+			k = 2
+		} else {
+			k++
+		}
+	}
+
+	if len(msg)%spongeChunkSize != 0 {
+		// the last chunk of the message is less than 31 bytes
+		// zero padding it, so that 0xdeadbeaf becomes
+		// 0xdeadbeaf000000000000000000000000000000000000000000000000000000
+		var buf [spongeChunkSize]byte
+		copy(buf[:], msg[(len(msg)/spongeChunkSize)*spongeChunkSize:])
+		state[k].SetBytesLessMod(buf[:])
+		dirty = true
+	}
+
+	if dirty {
+		// we haven't hashed something in the main sponge loop and need to do hash here
+		hash, err := hashWithStateExBytes2(state, scratch)
+		if err != nil {
+			return nil, err
+		}
+		currentHash.Set(&hash)
+	}
+
+	hash := currentHash.Bytes()
+	return hash[:], nil
 }
 
 // HashBytesX returns a sponge hash of a msg byte slice split into blocks of 31 bytes

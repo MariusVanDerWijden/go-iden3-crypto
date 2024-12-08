@@ -1,11 +1,15 @@
 package poseidon
 
 import (
+	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"math/big"
 	"testing"
 
+	"github.com/iden3/go-iden3-crypto/ff"
 	"github.com/iden3/go-iden3-crypto/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -598,5 +602,55 @@ func BenchmarkPoseidonHash16Inputs(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		_, _ = Hash(bigArray16)
+	}
+}
+
+func BenchmarkPoseidonHash(b *testing.B) {
+	input := make([]byte, 5*1024*1024)
+	rand.Read(input)
+	for i := 0; i < b.N; i++ {
+		Sum(input)
+		Sum(input)
+		Sum(input)
+	}
+}
+
+func BenchmarkPoseidonHash2(b *testing.B) {
+	input := make([]byte, 5*1024*1024)
+	rand.Read(input)
+	for i := 0; i < b.N; i++ {
+		HashBytesXLessAlloc(input, spongeInputs)
+		HashBytesXLessAlloc(input, spongeInputs)
+		HashBytesXLessAlloc(input, spongeInputs)
+	}
+}
+
+func TestLessAlloc(t *testing.T) {
+	inputA := make([]byte, 5*1024*1024)
+	rand.Read(inputA)
+
+	a := Sum(inputA)
+	b, _ := HashBytesXLessAlloc(inputA, 16)
+	if !bytes.Equal(a, b) {
+		t.Fatalf("a: %x b: %x", a, b)
+	}
+}
+
+func TestSetBytesLessAlloc(t *testing.T) {
+	input := make([]byte, 31)
+	rand.Read(input)
+
+	a := ff.NewElement().SetBytes(input)
+	b := ff.NewElement().SetBytesLessMod(input)
+	if a.Cmp(b) != 0 {
+		t.Fatalf("input %#v a %#v b %#v", input, a.Bytes(), b.Bytes())
+	}
+}
+
+func BenchmarkSHA(b *testing.B) {
+	input := make([]byte, 50*1024*1024)
+	rand.Read(input)
+	for i := 0; i < b.N; i++ {
+		sha256.Sum256(input)
 	}
 }
